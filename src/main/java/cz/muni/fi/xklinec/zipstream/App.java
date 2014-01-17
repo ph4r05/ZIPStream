@@ -129,14 +129,14 @@ public class App
         InputStream  fis = null;
                 
         if ((args.length!=0 && args.length!=2)){
-            System.out.println(String.format("Usage: app.jar source.apk dest.apk"));
+            System.err.println(String.format("Usage: app.jar source.apk dest.apk"));
             return;
         } else if (args.length==2){
-            System.out.println(String.format("Will use file [%s] as input file and [%s] as output file", args[0], args[1]));
+            System.err.println(String.format("Will use file [%s] as input file and [%s] as output file", args[0], args[1]));
             fis = new FileInputStream(args[0]);
             fos = new FileOutputStream(args[1]);
         } else if (args.length==0){
-            System.out.println(String.format("Will use file [STDIN] as input file and [STDOUT] as output file"));
+            System.err.println(String.format("Will use file [STDIN] as input file and [STDOUT] as output file"));
             fis = System.in;
             fos = System.out;
         }
@@ -182,7 +182,7 @@ public class App
                 System.arraycopy(deflDataTmp, 0, deflData, 0, defl);
             }
             
-            System.out.println(String.format("ZipEntry: meth=%d "
+            System.err.println(String.format("ZipEntry: meth=%d "
                     + "size=%010d isDir=%5s "
                     + "compressed=%07d extra=%d lextra=%d uextra=%d "
                     + "comment=[%s] "
@@ -207,14 +207,14 @@ public class App
             // META-INF files should be always on the end of the archive, 
             // thus add postponed files right before them
             if (curName.startsWith("META-INF") && peList.size()>0){
-                System.out.println("Now is the time put things back, but at first, I'll perform some \"facelifting\"...");
+                System.err.println("Now is the time to put things back, but at first, I'll perform some \"facelifting\"...");
                 
                 // Simulate som evil being done
                 Thread.sleep(5000);
                 
-                System.out.println("OK its done, let's do this");
+                System.err.println("OK its done, let's do this.");
                 for(PostponedEntry pe : peList){
-                    System.out.println("Adding postponed entry at the end of the archive! deflSize=" 
+                    System.err.println("Adding postponed entry at the end of the archive! deflSize=" 
                     + pe.deflData.length + "; inflSize=" + pe.byteData.length
                     + "; meth: " + pe.ze.getMethod());
                     
@@ -231,7 +231,7 @@ public class App
             // If the file is not interesting, send directly to the stream.
             if ("classes.dex".equalsIgnoreCase(curName)
                  || "AndroidManifest.xml".equalsIgnoreCase(curName)){
-                 System.out.println("### Interesting file, postpone sending!!!");
+                 System.err.println("### Interesting file, postpone sending!!!");
                  
                  PostponedEntry pe = new PostponedEntry(ze, byteData, deflData);
                  peList.add(pe);
@@ -254,6 +254,6 @@ public class App
         zop.close();
         fos.close();
         
-        System.out.println( "THE END!" );
+        System.err.println( "THE END!" );
     }
 }
