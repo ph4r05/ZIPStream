@@ -1,3 +1,20 @@
+/*
+ * Copyright (C) 2014 ph4r05
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package cz.muni.fi.xklinec.zipstream;
 
 import java.io.ByteArrayOutputStream;
@@ -5,11 +22,11 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.Deflater;
-import java.util.zip.Inflater;
-import org.apache.commons.compress.archivers.ArchiveEntry;
 import org.apache.commons.compress.archivers.zip.UnparseableExtraFieldData;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
@@ -17,8 +34,9 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.apache.commons.compress.archivers.zip.ZipExtraField;
 
 /**
- * Hello world!
- *
+ * Magic application for modifying ZIP files on the fly.
+ * 
+ * @author ph4r05 (Dusan Klinec)
  */
 public class App 
 {
@@ -95,40 +113,45 @@ public class App
         int defl = 0;
     }
     
-    public static void main( String[] args ) throws FileNotFoundException, IOException, NoSuchFieldException, ClassNotFoundException, NoSuchMethodException
-    {
-        /*if (args==null || args.length!=2){
-            System.out.println(String.format("Usage: %s file.apk", args[0]));
+    /**
+     * Entry point. 
+     * 
+     * @param args
+     * @throws FileNotFoundException
+     * @throws IOException
+     * @throws NoSuchFieldException
+     * @throws ClassNotFoundException
+     * @throws NoSuchMethodException 
+     */
+    public static void main( String[] args ) throws FileNotFoundException, IOException, NoSuchFieldException, ClassNotFoundException, NoSuchMethodException, InterruptedException
+    {   
+        OutputStream fos = null;
+        InputStream  fis = null;
+                
+        if ((args.length!=0 && args.length!=2)){
+            System.out.println(String.format("Usage: app.jar source.apk dest.apk"));
             return;
-        }*/
-        final String FNAME = "/tmp/a.apk";
-        final String FNAMEO = "/tmp/b.apk";
-        final Inflater inf = new Inflater(true);
-        final Deflater def = new Deflater(9, true);
-        exposeZip();
-        
-        FileInputStream fis = new FileInputStream(FNAME);
-        ZipArchiveInputStream zip = new ZipArchiveInputStream(fis);
-        
-        // Simple ArchiveEntry
-        ArchiveEntry entry = zip.getNextEntry();
-        while(entry!=null){
-            System.out.println(String.format("ZipEntry: size=%010d isDir=%5s name [%s]", entry.getSize(), entry.isDirectory(), entry.getName()));
-            entry = zip.getNextEntry();
+        } else if (args.length==2){
+            System.out.println(String.format("Will use file [%s] as input file and [%s] as output file", args[0], args[1]));
+            fis = new FileInputStream(args[0]);
+            fos = new FileOutputStream(args[1]);
+        } else if (args.length==0){
+            System.out.println(String.format("Will use file [STDIN] as input file and [STDOUT] as output file"));
+            fis = System.in;
+            fos = System.out;
         }
         
-        // Proof of concept - only one postponed entry
+        final Deflater def = new Deflater(9, true);
+        ZipArchiveInputStream zip = new ZipArchiveInputStream(fis);
+        
+        // List of postponed entries for further "processing".
         List<PostponedEntry> peList = new ArrayList<PostponedEntry>(6);
         
         // Output stream
-        FileOutputStream fos = new FileOutputStream(FNAMEO);
         ZipArchiveOutputStream zop = new ZipArchiveOutputStream(fos);
         zop.setLevel(9);
         
-        // Reset stream and use ZipArchiveEntry
-        fis = new FileInputStream(FNAME);
-        zip = new ZipArchiveInputStream(fis);
-        
+        // Read the archive
         ZipArchiveEntry ze = zip.getNextZipEntry();
         while(ze!=null){
             
@@ -184,6 +207,12 @@ public class App
             // META-INF files should be always on the end of the archive, 
             // thus add postponed files right before them
             if (curName.startsWith("META-INF") && peList.size()>0){
+                System.out.println("Now is the time put things back, but at first, I'll perform some \"facelifting\"...");
+                
+                // Simulate som evil being done
+                Thread.sleep(5000);
+                
+                System.out.println("OK its done, let's do this");
                 for(PostponedEntry pe : peList){
                     System.out.println("Adding postponed entry at the end of the archive! deflSize=" 
                     + pe.deflData.length + "; inflSize=" + pe.byteData.length
