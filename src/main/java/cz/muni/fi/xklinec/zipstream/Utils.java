@@ -23,8 +23,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.Security;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.util.encoders.Base64;
 
 /**
@@ -32,6 +33,10 @@ import org.bouncycastle.util.encoders.Base64;
  * @author ph4r05
  */
 public class Utils {
+    static {
+        Security.addProvider(new BouncyCastleProvider());
+    }
+    
     /**
      * Reflection magic - making some fields & methods accessible.
      * 
@@ -85,7 +90,7 @@ public class Utils {
      */
     public static String sha256(byte[] b){
         try {
-            MessageDigest sha = MessageDigest.getInstance("SHA256");
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
             InputStream fis = new ByteArrayInputStream(b);
             DigestInputStream dis = new DigestInputStream(fis, sha);
             
