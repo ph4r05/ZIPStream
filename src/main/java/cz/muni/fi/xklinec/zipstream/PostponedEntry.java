@@ -50,7 +50,9 @@ public class PostponedEntry{
    }
     
    public void dump(ZipArchiveOutputStream zop) throws IOException{
-        zop.putArchiveEntry(ze);
+       ZipArchiveEntry zen = (ZipArchiveEntry) ze.clone();
+       
+        zop.putArchiveEntry(zen);
         zop.write(byteData, 0, byteData.length);
         zop.closeArchiveEntry();
    }

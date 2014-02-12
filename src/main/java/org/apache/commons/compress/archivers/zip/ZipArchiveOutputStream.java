@@ -147,7 +147,7 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
     /**
      * List of ZipArchiveEntries written so far.
      */
-    private final List<ZipArchiveEntry> entries =
+    private List<ZipArchiveEntry> entries =
         new LinkedList<ZipArchiveEntry>();
 
     /**
@@ -183,7 +183,7 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
     /**
      * Holds the offsets of the LFH starts for each entry.
      */
-    private final Map<ZipArchiveEntry, Long> offsets =
+    private Map<ZipArchiveEntry, Long> offsets =
         new HashMap<ZipArchiveEntry, Long>();
 
     /**
@@ -208,20 +208,20 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
      * This Deflater object is used for output.
      *
      */
-    protected final Deflater def = new Deflater(level, true);
+    protected Deflater def = new Deflater(level, true);
 
     /**
      * This buffer serves as a Deflater.
      *
      */
-    private final byte[] buf = new byte[BUFFER_SIZE];
+    private byte[] buf = new byte[BUFFER_SIZE];
 
     /**
      * Optional random access output.
      */
     private final RandomAccessFile raf;
 
-    private final OutputStream out;
+    private OutputStream out;
 
     /**
      * whether to use the general purpose bit flag when writing UTF-8
@@ -402,6 +402,21 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
      */
     @Override
     public void finish() throws IOException {
+        writeFinish();
+        
+        offsets.clear();
+        entries.clear();
+        def.end();
+        finished = true;
+    }
+
+    /**
+     * Writes central directory, but without cleaning internal structures 
+     * (compared to finish()).
+     * 
+     * @throws IOException 
+     */
+    public void writeFinish() throws IOException{
         if (finished) {
             throw new IOException("This archive has already been finished");
         }
@@ -417,12 +432,8 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
         cdLength = written - cdOffset;
         writeZip64CentralDirectory();
         writeCentralDirectoryEnd();
-        offsets.clear();
-        entries.clear();
-        def.end();
-        finished = true;
     }
-
+    
     /**
      * Writes all necessary data for this entry.
      * @throws IOException on error
@@ -1411,6 +1422,81 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
         return getEntryEncoding(ze).encode(ze.getName());
     }
 
+    public CurrentEntry getEntry() {
+        return entry;
+    }
+
+    public String getComment() {
+        return comment;
+    }
+
+    public long getWritten() {
+        return written;
+    }
+
+    public long getCdOffset() {
+        return cdOffset;
+    }
+
+    public long getCdLength() {
+        return cdLength;
+    }
+
+    public int getLevel() {
+        return level;
+    }
+
+    public OutputStream getOut() {
+        return out;
+    }
+
+    public void setWritten(long written) {
+        this.written = written;
+    }
+    
+    public void setOut(OutputStream nout){
+        this.out = nout;
+    }
+    
+    // Clone this object
+    public ZipArchiveOutputStream cloneThis() throws CloneNotSupportedException{
+        ZipArchiveOutputStream res = new ZipArchiveOutputStream(out);
+        
+        res.buf = this.buf.clone();
+        res.cdLength = this.cdLength;
+        res.cdOffset = this.cdOffset;
+        res.comment = this.comment==null ? null : new String(this.comment);
+        res.createUnicodeExtraFields = this.createUnicodeExtraFields;
+        res.def = new Deflater(this.level, true);
+        res.encoding = this.encoding;
+        res.entry = this.entry == null ? null : (CurrentEntry) this.entry.clone();
+        res.fallbackToUTF8 = this.fallbackToUTF8;
+        res.finished = this.finished;
+        res.hasCompressionLevelChanged = this.hasCompressionLevelChanged;
+        res.hasUsedZip64 = this.hasUsedZip64;
+        res.level = this.level;
+        res.method = this.method;
+        res.useUTF8Flag = this.useUTF8Flag;
+        res.written = this.written;
+        res.zip64Mode = this.zip64Mode;
+        res.zipEncoding = this.zipEncoding;
+        
+        // Deep clonning of entries
+        res.entries = new LinkedList<ZipArchiveEntry>();
+        res.offsets = new HashMap<ZipArchiveEntry, Long>();
+        for(ZipArchiveEntry e : this.entries){
+            ZipArchiveEntry en = (ZipArchiveEntry) e.clone();
+            
+            res.entries.add(en);
+            
+            if (this.offsets.containsKey(e)){
+                res.offsets.put(en, this.offsets.get(e));
+            }
+        }
+        
+        return res;
+    }
+    
     /**
      * Closes the underlying stream/file without finishing the
      * archive, the result will likely be a corrupt archive.
@@ -1461,7 +1547,7 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
      * Structure collecting information for the entry that is
      * currently being written.
      */
-    private static final class CurrentEntry {
+    public static final class CurrentEntry implements Cloneable{
         private CurrentEntry(ZipArchiveEntry entry) {
             this.entry = entry;
         }
@@ -1496,6 +1582,41 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
          * the stream at all.</p>
          */
         private boolean hasWritten;
+
+        public ZipArchiveEntry getEntry() {
+            return entry;
+        }
+
+        public long getLocalDataStart() {
+            return localDataStart;
+        }
+
+        public long getDataStart() {
+            return dataStart;
+        }
+
+        public long getBytesRead() {
+            return bytesRead;
+        }
+
+        public boolean isCausedUseOfZip64() {
+            return causedUseOfZip64;
+        }
+
+        public boolean isHasWritten() {
+            return hasWritten;
+        }
+        
+        @Override
+        public Object clone(){
+            CurrentEntry res = new CurrentEntry((ZipArchiveEntry) entry.clone());
+            res.bytesRead = this.bytesRead;
+            res.causedUseOfZip64 = this.causedUseOfZip64;
+            res.dataStart = this.dataStart;
+            res.hasWritten = this.hasWritten;
+            res.localDataStart = this.localDataStart;
+            return res;
+        }
     }
 
 }
