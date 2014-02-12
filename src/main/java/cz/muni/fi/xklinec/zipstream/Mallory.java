@@ -56,7 +56,7 @@ public class Mallory {
     private final List<String> arguments = new ArrayList<String>(8);
     
     @Option(name = "--cmd", aliases = {"-c"}, usage = "Command for APK modification. APK to modify will be passed as the first argument. "
-            + "After command is finished, inputfile_tampered is axpected in the same folder as a result of modification. If not provided, "
+            + "After command is finished, inputfile_mod.apk is axpected in the same folder as a result of modification. If not provided, "
             + "modification will be simulated. ")
     private String cmd=null;
     
@@ -287,7 +287,7 @@ public class Mallory {
                 + " APK file ["+tempApk.toString()+"]; filezise=["+tempApk.length()+"]");
         
         // New APK was generated, new filename = "tempApk_tampered"
-        File newApk = new File(outFile==null ? tempApk.getAbsolutePath() + "_tampered" : outFile);
+        File newApk = new File(outFile==null ? getFileName(tempApk.getAbsolutePath()) : outFile);
         
         if (cmd==null){
             // Simulation of doing some evil stuff on the temporary apk
@@ -409,5 +409,16 @@ public class Mallory {
         
         if (!quiet)
             System.err.println( "THE END!" );
+    }
+    
+    public String getFileName(String name){
+        if (name.endsWith(".apk")==false){
+            throw new IllegalArgumentException("Filename has to end on .apk");
+        }
+        
+        name = name.replaceFirst("\\.apk$", "");
+        name = name + "_mod.apk";
+        
+        return name;
     }
 }
