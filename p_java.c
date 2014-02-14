@@ -3,6 +3,9 @@
 #include <fcntl.h>  
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <libgen.h>
+#include <string.h>
 
 void main() {
 
@@ -11,6 +14,33 @@ void main() {
 	  perror("Pipe failed");
 	  exit(1);
 	}
+
+	// get location of this program image.
+	char * dname;
+	char loc[1024];
+	char pathJar[1024];
+	char wrapCmd[1024];
+
+	int lsize=readlink("/proc/self/exe", loc, 1024);
+	if (lsize==-1){
+		perror("Cannot determine correct path");
+		exit(2);
+
+	} 
+	
+	loc[lsize] = 0;
+	fprintf(stderr, "Current executable: '%s'", loc);
+	dname=dirname(loc);	// dname is same as loc, do not free!
+	fprintf(stderr, " dir: '%s'\n", dname);
+	
+	strcpy(pathJar, dname);
+	strcat(pathJar, "/ZIPStream-1.0-SNAPSHOT.jar");
+
+	strcpy(wrapCmd, "/bin/bash ");
+	strcat(wrapCmd, dname);
+	strcat(wrapCmd, "/wrapper.sh <<INPUTAPK>>");
+	
+	fprintf(stderr, "Jar: '%s' cmd: '%s'\n\n", pathJar, wrapCmd);
 
 	if (fork()==0){
 		// Close stdin of the program, duplicate input side of pipe to stdin
@@ -28,13 +58,14 @@ void main() {
 		close(pipeA[1]);
 		close(pipeB[0]);
 		close(pipeB[1]);
-
-		execlp("/bin/java", "/bin/java", "-cp", "ZIPStream-1.0-SNAPSHOT.jar", 
+	
+		// previously used (did not work, now use wrapper):
+		// "--cmd", "/bin/bash -c 'cd /root/program/use_jdbc; /bin/java -jar /root/program/use_jdbc/ApkAttack.jar <<INPUTAPK>>'", 
+		execlp("/bin/java", "/bin/java", "-cp", pathJar, 
 			"cz.muni.fi.xklinec.zipstream.Mallory",
 			"-f", "1" ,
 			"--padd-extra", "512000",
-			//"--cmd", "/bin/bash -c 'cd /root/program/use_jdbc; /bin/java -jar /root/program/use_jdbc/ApkAttack.jar <<INPUTAPK>>'", 
-			"--cmd", "/bin/bash wrapper.sh <<INPUTAPK>>",
+			"--cmd", wrapCmd,
 			 NULL);
 		
 		perror("execvp of ./p failed");
@@ -57,9 +88,6 @@ void main() {
 		close(pipeB[0]);
 		close(pipeB[1]);
 
-		// we write to pipeA[1], read from pipeB[0] 
-		//socket_nonblocking(pipeA[1]);
-		//socket_nonblocking(pipeB[0]);
 		wait();
 		exit(0);
 	}
