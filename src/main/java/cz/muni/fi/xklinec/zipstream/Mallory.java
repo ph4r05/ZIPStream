@@ -98,6 +98,9 @@ public class Mallory {
     @Option(name = "--padd-extra", aliases = {"-p"}, usage = "Desired padding of the resulting APK in bytes. Is used only if output-size is zero.\nsize(out_APK) = size(original_APK) + padd_extra.")
     private long paddExtra = 0;
     
+    @Option(name = "--exclude", aliases = {"-e"}, usage = "Exclude regex for postponing files")
+    private List<String> exclude = new ArrayList<String>();
+    
     private static Mallory runningInstance;
     public static void main(String[] args) {
         try {
@@ -215,6 +218,14 @@ public class Mallory {
         // Output stream
         zop = new ZipArchiveOutputStream(fos);
         zop.setLevel(9);
+        
+        if (!quiet){
+            System.err.println("Patterns that will be excluded:");
+            for(String regex : exclude){
+                System.err.println("  '"+regex+"'");
+            }
+            System.err.println();
+        }
         
         // Read the archive
         ZipArchiveEntry ze = zip.getNextZipEntry();
@@ -495,12 +506,24 @@ public class Mallory {
      */
     public boolean isPostponed(ZipArchiveEntry ze){
         final String curName = ze.getName();
-        return (curName.startsWith(META_INF)
+        if (curName.startsWith(META_INF)
                  || CLASSES.equalsIgnoreCase(curName)
                  || ANDROID_MANIFEST.equalsIgnoreCase(curName)
                  || RESOURCES.equalsIgnoreCase(curName)
                  || curName.endsWith(".xml")
-                 || (ze.getMethod() == ZipArchiveOutputStream.DEFLATED && curName.endsWith(".png")));
+                 || (ze.getMethod() == ZipArchiveOutputStream.DEFLATED && curName.endsWith(".png"))){
+            return true;
+        }
+        
+        if (exclude!=null && !exclude.isEmpty()){
+            for(String regex : exclude){
+                if (curName.matches(regex)){
+                    return true;
+                }
+            }
+        }
+        
+        return false;
     }
     
     /**
