@@ -32,6 +32,7 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -114,6 +115,9 @@ public class Mallory {
     
     @Option(name = "--delete-artefacts", aliases = {"-d"}, usage = "Delete all temporary artefacts when finished.")
     private boolean deleteArtefacts = false;
+    
+    @Option(name = "--omit-missing", aliases = {"-m"}, usage = "Omit missing files from central directory.")
+    private boolean omitMissing = false;
     
     private static Mallory runningInstance;
     public static void main(String[] args) {
@@ -803,7 +807,48 @@ public class Mallory {
                         System.err.println("Warning: File from original file ["+oldFile+"] was not found in tampered file!");
                     }
                 }
-            }
+            }            
+        }
+        
+        // If omitMissing is specified, remove ZIP entries from ZOP that are not present
+        // in tampered file (no signature for them).
+        if (omitMissing){
+            List<ZipArchiveEntry> entries = zop.getEntries();
+            
+            // Iterate over map files and lookup the same among modified files.
+            for(String oldFile : alMap.keySet()){
+                if (files.contains(oldFile)==false){
+                    if (!sentFiles.contains(oldFile)) {
+                        continue;
+                    }
+                    
+                    // Remove from ZOP entries list - will be not added to central directory
+                    if (alMap.containsKey(oldFile)==false){
+                        if (!quiet){
+                            System.err.println("Warning: File from original file ["+oldFile+"] was not found in tampered file and file was already sent, no ZIP entry!!!");
+                        }
+                        
+                        continue;
+                    }
+                    
+                    boolean deleted = false;
+                    
+                    // Delete file based on filename (do not rely on .equals()).
+                    Iterator<ZipArchiveEntry> it = entries.iterator();
+                    while(it.hasNext()){
+                        ZipArchiveEntry tmpZe = it.next();
+                        if (tmpZe.getName().equals(oldFile)){
+                            it.remove();
+                            deleted=true;
+                            break;
+                        }
+                    }
+                    
+                    if (!quiet){
+                        System.err.println("Removed ["+deleted+"] File ["+oldFile+"] remove from zip entries.");
+                    }
+                }
+            }        
         }
         
         if (!quiet && addPadding && padlenLeft > 0){

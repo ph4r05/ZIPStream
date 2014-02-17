@@ -1457,6 +1457,22 @@ public class ZipArchiveOutputStream extends ArchiveOutputStream {
     public void setOut(OutputStream nout){
         this.out = nout;
     }
+
+    public List<ZipArchiveEntry> getEntries() {
+        return entries;
+    }
+
+    public void setEntries(List<ZipArchiveEntry> entries) {
+        this.entries = entries;
+    }
+
+    public Map<ZipArchiveEntry, Long> getOffsets() {
+        return offsets;
+    }
+
+    public void setOffsets(Map<ZipArchiveEntry, Long> offsets) {
+        this.offsets = offsets;
+    }
     
     // Clone this object
     public ZipArchiveOutputStream cloneThis() throws CloneNotSupportedException{
