@@ -109,6 +109,12 @@ public class Mallory {
     @Option(name = "--recompute-crc32", aliases = {"-r"}, usage = "Recomputes CRC32 for ZIP entries to avoid invalid CRC.")
     private boolean recomputeCrc = false;
     
+    @Option(name = "--create-temp-dir", aliases = {"-t"}, usage = "Creates unique temporary directory for tampered APKs.")
+    private boolean separateTempDir = false;
+    
+    @Option(name = "--delete-artefacts", aliases = {"-d"}, usage = "Delete all temporary artefacts when finished.")
+    private boolean deleteArtefacts = false;
+    
     private static Mallory runningInstance;
     public static void main(String[] args) {
         try {
@@ -118,7 +124,7 @@ public class Mallory {
             // do the main
             runningInstance.doMain(args);
         } catch (Exception e) {
-            e.printStackTrace();
+            e.printStackTrace(System.err);
         }
     }
     
@@ -132,6 +138,7 @@ public class Mallory {
     private File newApk;
     private File tempApk;
     private Set<String> sentFiles;
+    private File effectiveTempDir;
     
     private final CRC32 crc = new CRC32();
     
@@ -210,8 +217,17 @@ public class Mallory {
         bis = new BufferedInputStream(fis);
         bos = new BufferedOutputStream(fos);
         
+        // Effective temporary dir - if separate is required
+        if (separateTempDir){
+            effectiveTempDir = File.createTempFile("temp_apk_dir_", "", new File(TEMP_DIR));
+            effectiveTempDir.delete();
+            effectiveTempDir.mkdir();
+        } else {
+            effectiveTempDir = new File(TEMP_DIR);
+        }
+        
         // Generate temporary APK filename
-        tempApk = File.createTempFile("temp_apk", ".apk", new File(TEMP_DIR));
+        tempApk = File.createTempFile("temp_apk_", ".apk", effectiveTempDir);
         if (tempApk.canWrite()==false){
             throw new IOException("Temp file is not writable!");
         }
@@ -545,6 +561,31 @@ public class Mallory {
         zop.close();
         bos.close();
         fos.close();
+        
+        // Delete temporary files if required
+        if (deleteArtefacts){
+            try {
+                if (newApk.exists()){
+                    newApk.delete();
+                    if (!quiet) System.err.println("Tampered APK removed. " + newApk.getAbsolutePath());
+                }
+
+                if (tempApk.exists()){
+                    tempApk.delete();
+                    if (!quiet) System.err.println("Original APK removed. " + tempApk.getAbsolutePath());
+                }
+
+                if (separateTempDir && effectiveTempDir.exists()){
+                    FileUtils.deleteDirectory(effectiveTempDir);
+                    if (!quiet) System.err.println("Temporary directory removed. " + effectiveTempDir.getAbsolutePath());
+                }
+
+                if (!quiet) System.err.println("Temporary files were removed.");
+            } catch(IOException e){
+                if (!quiet)
+                    e.printStackTrace(System.err);
+            }
+        }
         
         if (!quiet)
             System.err.println("THE END!");

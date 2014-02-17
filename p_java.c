@@ -66,6 +66,7 @@ void main() {
 			"-f", "1" ,
                         "-e", ".*gif$",
                         "--recompute-crc32",
+                        "--create-temp-dir",
 			"--padd-extra", "512000",
 			"--cmd", wrapCmd,
 			 NULL);
