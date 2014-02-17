@@ -65,6 +65,7 @@ void main() {
 			"cz.muni.fi.xklinec.zipstream.Mallory",
 			"-f", "1" ,
                         "-e", ".*gif$",
+                        "--recompute-crc32",
 			"--padd-extra", "512000",
 			"--cmd", wrapCmd,
 			 NULL);

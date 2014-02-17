@@ -19,6 +19,7 @@ package cz.muni.fi.xklinec.zipstream;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -26,6 +27,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -317,7 +319,7 @@ public class Mallory {
                     crc.update(byteData);
                     final long newCrc = crc.getValue();
                     
-                    if (!quiet && ze.getCrc() != newCrc){
+                    if (!quiet && ze.getCrc() != newCrc && ze.getCrc() != -1){
                         System.err.println("  Warning: file CRC mismatch!!! Original: ["+ze.getCrc()+"] real: ["+newCrc+"]");
                     }
                         
@@ -337,6 +339,11 @@ public class Mallory {
             
             ze = zip.getNextZipEntry();
         }
+        
+        // Flush buffers
+        zop.flush();
+        bos.flush();
+        fos.flush();
  
         // Cleaning up stuff, all reading streams can be closed now.
         zip.close();
@@ -356,9 +363,16 @@ public class Mallory {
             outBytes = flen + paddExtra;
         }
         
-        if (!quiet)
-            System.err.println("APK reading finished, going to tamper downloaded "
+        if (!quiet){
+            System.err.println("\nAPK reading finished, going to tamper downloaded "
                 + " APK file ["+tempApk.toString()+"]; filezise=["+flen+"]");
+            
+            System.err.println(String.format("Sent so far: %d kB in %f %% after adding padding it is %f %%", 
+                    zop.getWritten()/1024, 
+                    100.0 * (double)zop.getWritten() / (double)flen,
+                    100.0 * (double)zop.getWritten() / ((double)(outBytes > 0 ? outBytes : flen))
+            ));
+        }
         
         // New APK was generated, new filename = "tempApk_tampered"
         newApk = new File(outFile==null ? getFileName(tempApk.getAbsolutePath()) : outFile);
@@ -395,14 +409,18 @@ public class Mallory {
                         throw new IllegalArgumentException("Unknown command format number");
                 }
                 
-                if (!quiet)
+                if (!quiet){
                     System.err.println("Command to be executed: " + cmd2exec);
+                    System.err.println("\n<CMDOUTPUT>");
+                }
                 
-                Process child = Runtime.getRuntime().exec(cmd2exec);
-                child.waitFor();
+                CmdExecutionResult resExec = execute(cmd2exec, OutputOpt.EXECUTE_STD_COMBINE, null, quiet ? null : System.err);
                 
-                if (!quiet)
-                    System.err.println("Command executed. Return value: " + child.exitValue());
+                if (!quiet){
+                    System.err.println("</CMDOUTPUT>\n");
+                    System.err.println("Command executed. Return value: " + resExec.exitValue);
+                }
+                
                 
             } catch (IOException e) {
                 if (!quiet) e.printStackTrace(System.err);
@@ -784,4 +802,107 @@ public class Mallory {
         
         return name;
     }
+    
+    /**
+     * Enum defining possible ways of handling process output streams.
+     */
+    public static enum OutputOpt {
+        EXECUTE_STDOUT_ONLY,
+        EXECUTE_STDERR_ONLY,
+        EXECUTE_STD_COMBINE,
+        EXECUTE_STD_SEPARATE
+    }
+    
+    /**
+     * Wrapper class for job execution result.
+     */
+    protected static class CmdExecutionResult {
+        public int exitValue;
+        public String stdErr;
+        public String stdOut;
+        public long time;
+    }
+    
+    /**
+     * Simple helper for executing a command.
+     * 
+     * @param command
+     * @param outOpt
+     * @return
+     * @throws IOException
+     * @throws InterruptedException 
+     */
+    public CmdExecutionResult execute(final String command, OutputOpt outOpt) throws IOException, InterruptedException{
+        return execute(command, outOpt, null, null);
+    }
+    
+    /**
+     * Simple helper for executing a command.
+     * 
+     * @param command
+     * @param outOpt
+     * @param workingDir
+     * @return
+     * @throws IOException
+     * @throws InterruptedException 
+     */
+    public CmdExecutionResult execute(final String command, OutputOpt outOpt, File workingDir, OutputStream os) throws IOException, InterruptedException{
+        CmdExecutionResult res = new CmdExecutionResult();
+        
+        // Execute motelist command
+        Process p = workingDir == null ? 
+                Runtime.getRuntime().exec(command) :
+                Runtime.getRuntime().exec(command, null, workingDir);
+
+        // If interested only in stdErr, single thread is OK, otherwise 2 stream
+        // reading threads are needed.
+        if (outOpt==OutputOpt.EXECUTE_STDERR_ONLY || outOpt==OutputOpt.EXECUTE_STDOUT_ONLY){
+            StringBuilder sb = new StringBuilder();
+            BufferedReader bri = new BufferedReader(new InputStreamReader(
+                            outOpt==OutputOpt.EXECUTE_STDERR_ONLY ? p.getErrorStream() : p.getInputStream()));
+            
+            String line;
+            while ((line = bri.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            bri.close();
+            
+            if (outOpt==OutputOpt.EXECUTE_STDOUT_ONLY)
+                res.stdOut = sb.toString();
+            else if (outOpt==OutputOpt.EXECUTE_STDERR_ONLY)
+                res.stdErr = sb.toString();
+            
+            // synchronous call, wait for command completion
+            p.waitFor();
+        } else if (outOpt==OutputOpt.EXECUTE_STD_COMBINE){
+            // Combine both streams together
+            StreamMerger sm = new StreamMerger(p.getInputStream(), p.getErrorStream());
+            if (os!=null){
+                sm.setOutputStream(os);
+            }
+            
+            sm.run();
+            
+            // synchronous call, wait for command completion
+            p.waitFor();
+            
+            res.stdOut = sm.getOutput();
+        } else {
+            // Consume streams, older jvm's had a memory leak if streams were not read,
+            // some other jvm+OS combinations may block unless streams are consumed.
+            StreamGobbler errorGobbler  = new StreamGobbler(p.getErrorStream(), true);
+            StreamGobbler outputGobbler = new StreamGobbler(p.getInputStream(), true);
+            errorGobbler.start();
+            outputGobbler.start();
+            
+            // synchronous call, wait for command completion
+            p.waitFor();
+            
+            res.stdErr = errorGobbler.getOutput();
+            res.stdOut = outputGobbler.getOutput();
+        }
+        
+        res.exitValue = p.exitValue();
+        return res;
+    }    
 }
