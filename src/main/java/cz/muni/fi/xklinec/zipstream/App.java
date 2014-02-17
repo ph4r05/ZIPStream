@@ -146,7 +146,7 @@ public class App
                     + pe.deflData.length + "; inflSize=" + pe.byteData.length
                     + "; meth: " + pe.ze.getMethod());
                     
-                    pe.dump(zop);
+                    pe.dump(zop, false);
                 }
                 
                 peList.clear();

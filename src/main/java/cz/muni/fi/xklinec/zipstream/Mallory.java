@@ -33,6 +33,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import org.apache.commons.compress.archivers.zip.UnparseableExtraFieldData;
 import org.apache.commons.compress.archivers.zip.UnrecognizedExtraField;
@@ -103,6 +104,9 @@ public class Mallory {
     @Option(name = "--exclude", aliases = {"-e"}, usage = "Exclude regex for postponing files")
     private List<String> exclude = new ArrayList<String>();
     
+    @Option(name = "--recompute-crc32", aliases = {"-r"}, usage = "Recomputes CRC32 for ZIP entries to avoid invalid CRC.")
+    private boolean recomputeCrc = false;
+    
     private static Mallory runningInstance;
     public static void main(String[] args) {
         try {
@@ -126,6 +130,8 @@ public class Mallory {
     private File newApk;
     private File tempApk;
     private Set<String> sentFiles;
+    
+    private final CRC32 crc = new CRC32();
     
     /**
      * List of all sent files, with data and hashes.
@@ -302,9 +308,22 @@ public class Mallory {
                 // Capturing interesting files for us and store for later.
                 // If the file is not interesting, send directly to the stream.
                 if (!quiet)
-                    System.err.println("### Interesting file, postpone sending!!!");
+                    System.err.println("  Interesting file, postpone sending!!!");
                  
             } else {
+                // recompute CRC?
+                if (recomputeCrc){
+                    crc.reset();
+                    crc.update(byteData);
+                    final long newCrc = crc.getValue();
+                    
+                    if (!quiet && ze.getCrc() != newCrc){
+                        System.err.println("  Warning: file CRC mismatch!!! Original: ["+ze.getCrc()+"] real: ["+newCrc+"]");
+                    }
+                        
+                    ze.setCrc(newCrc);
+                }
+                
                 // Write ZIP entry to the archive
                 zop.putArchiveEntry(ze);
                 // Add file data to the stream
@@ -661,7 +680,7 @@ public class Mallory {
                     if (!quiet) System.err.println("  Added padding: " + padd2add + "; left: " + padlenLeft);
                 }
                     
-                al.dump(zop);
+                al.dump(zop, recomputeCrc);
                 
             } else {
                 // Check the entry against the old entry hash
@@ -692,7 +711,7 @@ public class Mallory {
                         if (!quiet) System.err.println("  Added padding: " + padd2add + "; left: " + padlenLeft);
                     }
                     
-                    al.dump(zop);
+                    al.dump(zop, recomputeCrc);
 
                 } else if (wasPostponed){
                     // File was not modified but is one of the postponed files, thus has to 
@@ -707,7 +726,7 @@ public class Mallory {
                         if (!quiet) System.err.println("  Added padding: " + padd2add + "; left: " + padlenLeft);
                     }
                     
-                    al.dump(zop);
+                    al.dump(zop, recomputeCrc);
                 }
             }
             

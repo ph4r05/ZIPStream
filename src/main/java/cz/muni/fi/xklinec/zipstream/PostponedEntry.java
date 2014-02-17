@@ -14,10 +14,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
 package cz.muni.fi.xklinec.zipstream;
 
 import java.io.IOException;
+import java.util.zip.CRC32;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 
@@ -28,7 +28,8 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 /**
  * Class for storing ZipEntries + corresponding data bytes.
  */
-public class PostponedEntry{
+public class PostponedEntry {
+
     public ZipArchiveEntry ze;
     public byte[] byteData;
     public byte[] deflData;
@@ -36,25 +37,46 @@ public class PostponedEntry{
     public String hashDefl;
     int infl = 0;
     int defl = 0;
-    
+
+    private final CRC32 crc = new CRC32();
+
     public PostponedEntry(ZipArchiveEntry ze, byte[] byteData, byte[] deflData) {
-       this.ze = (ZipArchiveEntry) ze.clone();
-       this.defl = deflData.length;
-       this.infl = byteData.length;
-       this.byteData = new byte[byteData.length];
-       this.deflData = new byte[deflData.length];
-       System.arraycopy(byteData, 0, this.byteData, 0, byteData.length);
-       System.arraycopy(deflData, 0, this.deflData, 0, deflData.length);
-       this.hashByte = Utils.sha256(this.byteData);
-       this.hashDefl = Utils.sha256(this.deflData);
-   }
+        this.ze = (ZipArchiveEntry) ze.clone();
+        this.defl = deflData.length;
+        this.infl = byteData.length;
+        this.byteData = new byte[byteData.length];
+        this.deflData = new byte[deflData.length];
+        System.arraycopy(byteData, 0, this.byteData, 0, byteData.length);
+        System.arraycopy(deflData, 0, this.deflData, 0, deflData.length);
+        this.hashByte = Utils.sha256(this.byteData);
+        this.hashDefl = Utils.sha256(this.deflData);
+    }
+
+    public void dump(ZipArchiveOutputStream zop) throws IOException {
+        dump(zop, false);
+    }
     
-   public void dump(ZipArchiveOutputStream zop) throws IOException{
-       ZipArchiveEntry zen = (ZipArchiveEntry) ze.clone();
-       
+    /**
+     * Writes whole entry to the ZIPArchiveOutputStream.
+     * Optionally recomputes CRC32 checksum.
+     * 
+     * @param zop
+     * @param recomputeCrc
+     * @throws IOException 
+     */
+    public void dump(ZipArchiveOutputStream zop, boolean recomputeCrc) throws IOException {
+        ZipArchiveEntry zen = (ZipArchiveEntry) ze.clone();
+
+        // recompute CRC?
+        if (recomputeCrc) {
+            crc.reset();
+            crc.update(byteData);
+            ze.setCrc(crc.getValue());
+        }
+
         zop.putArchiveEntry(zen);
         zop.write(byteData, 0, byteData.length);
         zop.closeArchiveEntry();
         zop.flush();
-   }
+    }
 }
