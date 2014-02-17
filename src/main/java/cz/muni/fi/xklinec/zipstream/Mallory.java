@@ -17,6 +17,8 @@
 
 package cz.muni.fi.xklinec.zipstream;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -116,6 +118,8 @@ public class Mallory {
     
     private OutputStream fos = null;
     private InputStream  fis = null;
+    private BufferedInputStream bis = null;
+    private BufferedOutputStream bos = null;
     private Deflater def;
     private ZipArchiveInputStream zip;
     private ZipArchiveOutputStream zop;
@@ -194,6 +198,10 @@ public class Mallory {
         def = new Deflater(9, true);
         sentFiles = new HashSet<String>();
         
+        // Buffer input stream so input stream is read in chunks
+        bis = new BufferedInputStream(fis);
+        bos = new BufferedOutputStream(fos);
+        
         // Generate temporary APK filename
         tempApk = File.createTempFile("temp_apk", ".apk", new File(TEMP_DIR));
         if (tempApk.canWrite()==false){
@@ -206,7 +214,7 @@ public class Mallory {
         // whatever, process it in ZIP logic and simultaneously to copy 
         // all read data to the temporary file - this reminds tee command
         // logic. This functionality can be found in TeeInputStream.
-        TeeInputStream tis = new TeeInputStream(fis, tos);
+        TeeInputStream tis = new TeeInputStream(bis, tos);
         
         // Providing tis to ZipArchiveInputStream will copy all read data
         // to temporary tos file.
@@ -216,7 +224,7 @@ public class Mallory {
         alMap = new HashMap<String, PostponedEntry>();
         
         // Output stream
-        zop = new ZipArchiveOutputStream(fos);
+        zop = new ZipArchiveOutputStream(bos);
         zop.setLevel(9);
         
         if (!quiet){
@@ -302,6 +310,7 @@ public class Mallory {
                 // Add file data to the stream
                 zop.write(byteData, 0, infl);
                 zop.closeArchiveEntry();
+                bos.flush();
                 
                 // Mark file as sent.
                 addSent(curName);
@@ -312,6 +321,7 @@ public class Mallory {
  
         // Cleaning up stuff, all reading streams can be closed now.
         zip.close();
+        bis.close();
         fis.close();
         tis.close();
         tos.close();
@@ -384,7 +394,8 @@ public class Mallory {
         // Now read new APK file with ZipInputStream and push new/modified files to the ZOP.
         //
         fis = new FileInputStream(newApk);
-        zip = new ZipArchiveInputStream(fis);
+        bis = new BufferedInputStream(fis);
+        zip = new ZipArchiveInputStream(bis);
         
         // Merge tampered APK to the final, but in this first time
         // do it to the external buffer in order to get final apk size.
@@ -398,8 +409,8 @@ public class Mallory {
         
         // Set temporary byte array output stream, so original output stream is not
         // touched in this phase.
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        zop.setOut(bos);
+        ByteArrayOutputStream bbos = new ByteArrayOutputStream();
+        zop.setOut(bbos);
         
         mergeTamperedApk(false, false);
         zop.flush();
@@ -413,12 +424,12 @@ public class Mallory {
         // Write central directory header to temporary buffer to discover its size.
         zop.writeFinish();
         zop.flush();
-        bos.flush();
+        bbos.flush();
         
         // Read new values
         long writtenAfterCentralDir = zop.getWritten();
         long centralDirLen = zop.getCdLength();
-        byte[] buffAfterMerge =  bos.toByteArray(); 
+        byte[] buffAfterMerge =  bbos.toByteArray(); 
         //int endOfCentralDir = (int) (buffAfterMerge.length - (writtenAfterCentralDir-writtenBeforeDiff));
         long endOfCentralDir = END_OF_CENTRAL_DIR_SIZE;
         
@@ -446,6 +457,7 @@ public class Mallory {
         // Close input streams for tampered APK
         try {
             zip.close();
+            bis.close();
             fis.close();
         } catch(Exception e){
             if (!quiet)
@@ -454,7 +466,8 @@ public class Mallory {
                 
         // Merge again, now with pre-defined padding size.
         fis = new FileInputStream(newApk);
-        zip = new ZipArchiveInputStream(fis);
+        bis = new BufferedInputStream(fis);
+        zip = new ZipArchiveInputStream(bis);
         // Revert changes - use clonned writer stream.
         zop = zop_back;
         
@@ -493,6 +506,7 @@ public class Mallory {
         }
         
         zop.close();
+        bos.close();
         fos.close();
         
         if (!quiet)

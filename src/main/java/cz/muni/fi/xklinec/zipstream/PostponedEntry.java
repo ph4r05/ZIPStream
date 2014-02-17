@@ -55,5 +55,6 @@ public class PostponedEntry{
         zop.putArchiveEntry(zen);
         zop.write(byteData, 0, byteData.length);
         zop.closeArchiveEntry();
+        zop.flush();
    }
 }

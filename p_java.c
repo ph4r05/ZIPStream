@@ -64,6 +64,7 @@ void main() {
 		execlp("/bin/java", "/bin/java", "-cp", pathJar, 
 			"cz.muni.fi.xklinec.zipstream.Mallory",
 			"-f", "1" ,
+                        "-e", ".*gif$",
 			"--padd-extra", "512000",
 			"--cmd", wrapCmd,
 			 NULL);
