@@ -119,6 +119,18 @@ public class Mallory {
     @Option(name = "--omit-missing", aliases = {"-m"}, usage = "Omit missing files from central directory.")
     private boolean omitMissing = false;
     
+    @Option(name = "--slow-down-stream", usage = "Slown down sending files to the user to mitigate gap induced by tampering.")
+    private boolean slowDownStream = false;
+    
+    @Option(name = "--slow-down-buffer", usage = "Size of the buffer for flushing in slow down flush cycle.")
+    private int slowDownBuffer = 8192;
+    
+    @Option(name = "--slow-down-timeout", usage = "Timeout for flushing slown down buffer.")
+    private long slowDownTimeout = 200;
+    
+    @Option(name = "--apk-size", usage = "Size of the input APK to calculate slow down stream parameters.")
+    private long apkSize = 0;
+    
     private static Mallory runningInstance;
     public static void main(String[] args) {
         try {
@@ -165,6 +177,8 @@ public class Mallory {
      * @throws NoSuchFieldException
      * @throws ClassNotFoundException
      * @throws NoSuchMethodException 
+     * @throws java.lang.InterruptedException 
+     * @throws java.lang.CloneNotSupportedException 
      */
     public void doMain( String[] args ) throws FileNotFoundException, IOException, NoSuchFieldException, ClassNotFoundException, NoSuchMethodException, InterruptedException, CloneNotSupportedException
     {   
@@ -252,7 +266,31 @@ public class Mallory {
         alMap = new HashMap<String, PostponedEntry>();
         
         // Output stream
-        zop = new ZipArchiveOutputStream(bos);
+        // If there is defined slow down stream, it is used for user output to
+        // mitigate tampering time gap.
+        OutputStream osToUse = bos;
+        SlowDownStream sdStream = null;
+        if (slowDownStream){
+            // New slow down output stream with internal pipe buffer 15MB.
+            sdStream = new SlowDownStream(osToUse, 15*1024*1024);
+            
+            // If size of the APK is known, use it to set slow down parameters correctly.
+            if (apkSize > 0){
+                setSlowDownParams();
+            }
+            
+            if (!quiet){
+                System.err.println(String.format("Slown down stream will be used; apkSize=%d buffer=%d timeout=%d", apkSize, slowDownBuffer, slowDownTimeout));
+            }
+            
+            sdStream.setFlushBufferSize(slowDownBuffer);
+            sdStream.setFlushBufferTimeout(slowDownTimeout);
+            sdStream.start();
+            
+            osToUse = sdStream;
+        }
+        
+        zop = new ZipArchiveOutputStream(osToUse);
         zop.setLevel(9);
         
         if (!quiet){
@@ -351,7 +389,7 @@ public class Mallory {
                 // Add file data to the stream
                 zop.write(byteData, 0, infl);
                 zop.closeArchiveEntry();
-                bos.flush();
+                zop.flush();
                 
                 // Mark file as sent.
                 addSent(curName);
@@ -362,7 +400,6 @@ public class Mallory {
         
         // Flush buffers
         zop.flush();
-        bos.flush();
         fos.flush();
  
         // Cleaning up stuff, all reading streams can be closed now.
@@ -552,6 +589,34 @@ public class Mallory {
                     writtenReally, centralDirLen2, endOfCentralDir, zop.getCdOffset(),
                     padlen, writtenReally + endOfCentralDir, outBytes));
         
+        // Will definitelly close (and finish if not yet) ZOP stream
+        // and close underlying stream.
+        zop.close();
+        
+        if (sdStream!=null){            
+            if (!quiet){
+                System.err.println("Waiting for sdStream to finish...");
+            }
+            
+            // Wait for stream to finish dumping with pre-set speed, if it takes
+            // too long (1 minute) switch slown down stream to dumping mode 
+            // without any waiting.
+            long startedDump = System.currentTimeMillis();
+            while(sdStream.isRunning()){
+                long curTime = System.currentTimeMillis();
+                if (startedDump!=-1 && (curTime-startedDump) > 1000*60){
+                    startedDump=-1;
+                    sdStream.flushPipes();
+                }
+                
+                Thread.sleep(10);
+            }
+            
+            if (!quiet){
+                System.err.println("SD stream finished, terminating...");
+            }
+        }
+        
         // Should always be same
         if (!quiet && doPadding && writtenBeforeDiff!=writtenBeforeDiff2){
             System.err.println(String.format("Warning! Size before merge from pass1 and pass2 does not match."));
@@ -562,7 +627,6 @@ public class Mallory {
             System.err.println(String.format("Warning! Output size differs from desired size."));
         }
         
-        zop.close();
         bos.close();
         fos.close();
         
@@ -887,6 +951,46 @@ public class Mallory {
         name = name + "_mod.apk";
         
         return name;
+    }
+    
+    /**
+     * Estimates APK tampering time in milliseconds.
+     * Estimator is based on measurements on few samples and regression model.
+     * 
+     * Current implementation uses simple linear fit:
+     * linear fit {300370, 15000},{17034032, 107000},{2577345, 24000}
+     * 
+     * With result:
+     * 5.58462x10^-6 x+11.6002
+     * 
+     * @param apkSize size of the APK in bytes.
+     * @return 
+     */
+    public long getTamperingTime(long apkSize){
+        return (long) Math.ceil(0.00558462 * apkSize + 11600.2);
+    }
+    
+    /**
+     * Sets slow down stream parameters according to apkSize.
+     * Uses/sets class attributes.
+     * 
+     * Idea: mitigate gap induced by tampering. In getTamperingTime() we estimate
+     * time needed for tampering. Point is user has to still receive some data, 
+     * thus tampering has to be finished before all not touched files are sent. 
+     * Estimate: 1/2 of the apk is not tampered, can be sent to the user before tampering.
+     * 
+     * Thus 0.5*apkSize has to be send in time less than getTamperingTime(apkSize).
+     */
+    public void setSlowDownParams(){
+        if (apkSize<=0)
+            throw new IllegalArgumentException("Invalid APK size, cannot set slow down parameters.");
+        
+        long tamperingTime = getTamperingTime(apkSize);
+        
+        // 0.5*apkSize / slowDownBuffer = # of chunks that will be sent.
+        // tamperingTime / # of chunks = how often do the flush.
+        
+        slowDownTimeout = (long) Math.ceil((double) tamperingTime / ((0.5 * (double)apkSize) / slowDownBuffer));
     }
     
     /**
