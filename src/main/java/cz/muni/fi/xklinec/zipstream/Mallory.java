@@ -471,11 +471,13 @@ public class Mallory {
                     System.err.println("\n<CMDOUTPUT>");
                 }
                 
+                long cmdStartTime = System.currentTimeMillis();
                 CmdExecutionResult resExec = execute(cmd2exec, OutputOpt.EXECUTE_STD_COMBINE, null, quiet ? null : System.err);
+                long cmdStopTime = System.currentTimeMillis();
                 
                 if (!quiet){
                     System.err.println("</CMDOUTPUT>\n");
-                    System.err.println("Command executed. Return value: " + resExec.exitValue);
+                    System.err.println("Command executed. Return value: " + resExec.exitValue + "; tamperingTime=" + (cmdStopTime-cmdStartTime));
                 }
                 
                 
@@ -604,7 +606,7 @@ public class Mallory {
             long startedDump = System.currentTimeMillis();
             while(sdStream.isRunning()){
                 long curTime = System.currentTimeMillis();
-                if (startedDump!=-1 && (curTime-startedDump) > 1000*60){
+                if (startedDump!=-1 && (curTime-startedDump) > 1000*120){
                     startedDump=-1;
                     sdStream.flushPipes();
                 }
@@ -959,6 +961,7 @@ public class Mallory {
      * 
      * Current implementation uses simple linear fit:
      * linear fit {300370, 15000},{17034032, 107000},{2577345, 24000}
+     * linear fit {300370, 8280}, {17034032, 
      * 
      * With result:
      * 5.58462x10^-6 x+11.6002
@@ -990,7 +993,12 @@ public class Mallory {
         // 0.5*apkSize / slowDownBuffer = # of chunks that will be sent.
         // tamperingTime / # of chunks = how often do the flush.
         
-        slowDownTimeout = (long) Math.ceil((double) tamperingTime / ((0.5 * (double)apkSize) / slowDownBuffer));
+        slowDownTimeout = (long) Math.ceil((double) tamperingTime / ((0.75 * (double)apkSize) / slowDownBuffer));
+        
+        if (!quiet){
+            System.err.println(String.format("Apksize=%d, tampering time=%d ms, slown down timeout=%d for a buffer size %d",
+                    apkSize, tamperingTime, slowDownTimeout, slowDownBuffer));
+        }
     }
     
     /**
