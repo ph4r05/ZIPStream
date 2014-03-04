@@ -7,7 +7,7 @@
 #include <libgen.h>
 #include <string.h>
 
-void main() {
+int main(int argc, char *argv[]) {
 
 	int pipeA[2], pipeB[2], ret;
 	if(pipe(pipeA) == -1||pipe(pipeB) == -1) {
@@ -63,10 +63,15 @@ void main() {
 		// "--cmd", "/bin/bash -c 'cd /root/program/use_jdbc; /bin/java -jar /root/program/use_jdbc/ApkAttack.jar <<INPUTAPK>>'", 
 		execlp("/bin/java", "/bin/java", "-cp", pathJar, 
 			"cz.muni.fi.xklinec.zipstream.Mallory",
-			"-f", "1" ,
-                        "-e", ".*gif$",
-                        "--recompute-crc32",
-                        "--create-temp-dir",
+			"-f", "1",
+			"-e", ".*gif$",
+			"--recompute-crc32",
+			"--create-temp-dir",
+			"--omit-missing",
+			"--slow-down-stream",
+			//"--apk-size", "300000",
+			"--slow-down-timeout", "75",
+			//"--delete-artefacts",
 			"--padd-extra", "512000",
 			"--cmd", wrapCmd,
 			 NULL);
@@ -94,4 +99,7 @@ void main() {
 		wait();
 		exit(0);
 	}
+        
+        return 0;
 }
+
